@@ -73,6 +73,20 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ChatMessage {
+	    role: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatMessage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.role = source["role"];
+	        this.content = source["content"];
+	    }
+	}
 
 }
 

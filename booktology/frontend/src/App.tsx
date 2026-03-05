@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { AnalyzeExplanation, SetProvider, ConnectChatGPTOAuth, GetConfig, SetModel, SetLanguage } from '../wailsjs/go/main/App'
+import { AnalyzeExplanation, SendChatMessage, SetProvider, ConnectChatGPTOAuth, GetConfig, SetModel, SetLanguage } from '../wailsjs/go/main/App'
 
 const MODELS: Record<string, { value: string; label: string }[]> = {
     'claude-cli': [
@@ -107,69 +107,137 @@ function Step2({ topic, onNext }: { topic: string; onNext: (text: string) => voi
     )
 }
 
+type ChatMsg = { role: 'user' | 'assistant'; content: string }
+
+const PROSE = `prose prose-invert prose-sm max-w-none
+    prose-headings:text-white prose-headings:font-bold
+    prose-h1:text-xl prose-h2:text-lg prose-h3:text-base prose-h3:text-indigo-300
+    prose-p:text-gray-300 prose-p:leading-relaxed prose-strong:text-white
+    prose-ul:text-gray-300 prose-ol:text-gray-300 prose-li:text-gray-300
+    prose-blockquote:border-indigo-500 prose-blockquote:text-gray-400
+    prose-code:text-green-400 prose-code:bg-gray-900 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded
+    prose-pre:bg-gray-900 prose-pre:text-green-400 prose-hr:border-gray-700`
+
 function Step3({ topic, explanation, onAnalyzed, onNext }: { topic: string; explanation: string; onAnalyzed: (a: string) => void; onNext: () => void }) {
-    const [result, setResult] = useState('')
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState('')
-
     const [status, setStatus] = useState('Claude CLI 연결 중...')
+    const [chatMessages, setChatMessages] = useState<ChatMsg[]>([])
+    const [chatInput, setChatInput] = useState('')
+    const [chatLoading, setChatLoading] = useState(false)
+    const chatEndRef = useRef<HTMLDivElement>(null)
 
     useEffect(() => {
-        const steps = [
+        const steps: [number, string][] = [
             [500,  'Claude CLI 실행 중...'],
             [2000, '설명 분석 중...'],
             [5000, '이해 갭 파악 중...'],
             [9000, '핵심 질문 생성 중...'],
             [14000,'응답 마무리 중...'],
-        ] as const
+        ]
         const timers = steps.map(([ms, msg]) => setTimeout(() => setStatus(msg), ms))
-
         AnalyzeExplanation(topic, explanation)
-            .then(res => { setResult(res); onAnalyzed(res) })
+            .then(res => {
+                onAnalyzed(res)
+                setChatMessages([{ role: 'assistant', content: res }])
+            })
             .catch(err => setError(String(err)))
             .finally(() => { setLoading(false); timers.forEach(clearTimeout) })
-
         return () => timers.forEach(clearTimeout)
     }, [])
 
+    useEffect(() => {
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }, [chatMessages, chatLoading])
+
+    async function sendMessage() {
+        const msg = chatInput.trim()
+        if (!msg || chatLoading) return
+        const newHistory: ChatMsg[] = [...chatMessages, { role: 'user', content: msg }]
+        setChatMessages(newHistory)
+        setChatInput('')
+        setChatLoading(true)
+        try {
+            const response = await SendChatMessage(newHistory, msg)
+            setChatMessages([...newHistory, { role: 'assistant', content: response }])
+        } catch (err) {
+            setChatMessages([...newHistory, { role: 'assistant', content: `오류: ${String(err)}` }])
+        } finally {
+            setChatLoading(false)
+        }
+    }
+
     return (
-        <div className="max-w-2xl w-full">
-            <h2 className="text-2xl font-bold mb-2">AI 분석 결과</h2>
-            <p className="text-gray-400 mb-6">이해 갭과 보완이 필요한 부분이에요.</p>
-            <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 mb-4 text-gray-300 text-sm leading-relaxed min-h-40">
+        <div className="max-w-2xl w-full flex flex-col" style={{ height: 'calc(100vh - 160px)' }}>
+            <h2 className="text-2xl font-bold mb-1">AI 분석 & 대화</h2>
+            <p className="text-gray-400 mb-3 text-sm">분석 결과를 보고 추가 질문을 이어갈 수 있어요.</p>
+
+            {/* 대화 영역 */}
+            <div className="flex-1 overflow-auto bg-gray-900 rounded-xl border border-gray-800 p-4 space-y-4 mb-3">
                 {loading && (
-                    <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-3 p-2">
                         <div className="flex items-center gap-3 text-gray-300">
                             <div className="w-4 h-4 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin shrink-0" />
                             <span className="text-sm">{status}</span>
                         </div>
-                        <div className="text-xs text-gray-600">시간이 걸릴 수 있어요. Claude CLI는 매 요청마다 초기화돼요.</div>
+                        <div className="text-xs text-gray-600">시간이 걸릴 수 있어요.</div>
                     </div>
                 )}
-                {error && <p className="text-red-400">오류: {error}</p>}
-                {result && (
-                    <div className="prose prose-invert prose-sm max-w-none
-                        prose-headings:text-white prose-headings:font-bold
-                        prose-h1:text-xl prose-h2:text-lg prose-h3:text-base prose-h3:text-indigo-300
-                        prose-p:text-gray-300 prose-p:leading-relaxed
-                        prose-strong:text-white
-                        prose-ul:text-gray-300 prose-ol:text-gray-300 prose-li:text-gray-300
-                        prose-blockquote:border-indigo-500 prose-blockquote:text-gray-400
-                        prose-code:text-green-400 prose-code:bg-gray-900 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded
-                        prose-pre:bg-gray-900 prose-pre:text-green-400
-                        prose-hr:border-gray-700">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {result}
-                        </ReactMarkdown>
+                {error && <p className="text-red-400 text-sm">오류: {error}</p>}
+                {chatMessages.map((msg, i) => (
+                    <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        {msg.role === 'assistant' ? (
+                            <div className="w-full">
+                                <div className="text-xs text-indigo-400 mb-1 font-medium">AI</div>
+                                <div className={PROSE}>
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                                </div>
+                                {i < chatMessages.length - 1 && <div className="mt-4 border-t border-gray-800" />}
+                            </div>
+                        ) : (
+                            <div className="max-w-sm bg-indigo-600 rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm text-white">
+                                {msg.content}
+                            </div>
+                        )}
+                    </div>
+                ))}
+                {chatLoading && (
+                    <div className="flex items-center gap-2 text-gray-400 text-sm">
+                        <div className="w-3 h-3 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
+                        <span>응답 중...</span>
                     </div>
                 )}
+                <div ref={chatEndRef} />
             </div>
+
+            {/* 입력창 */}
+            {!loading && !error && (
+                <div className="flex gap-2 mb-3">
+                    <input
+                        type="text"
+                        value={chatInput}
+                        onChange={e => setChatInput(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendMessage()}
+                        placeholder="추가 질문을 입력하세요..."
+                        disabled={chatLoading}
+                        className="flex-1 bg-gray-800 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-indigo-500 text-sm disabled:opacity-50"
+                    />
+                    <button
+                        onClick={sendMessage}
+                        disabled={!chatInput.trim() || chatLoading}
+                        className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors"
+                    >
+                        전송
+                    </button>
+                </div>
+            )}
+
             <button
                 onClick={onNext}
                 disabled={loading}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg py-3 font-semibold transition-colors"
+                className="w-full bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 rounded-lg py-2.5 text-sm font-semibold transition-colors"
             >
-                복습하기 →
+                복습 단계로 →
             </button>
         </div>
     )

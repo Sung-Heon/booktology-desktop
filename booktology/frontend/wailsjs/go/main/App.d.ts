@@ -12,6 +12,8 @@ export function GetConfig():Promise<main.AppConfig>;
 
 export function GetSessionID():Promise<string>;
 
+export function SendChatMessage(arg1:Array<main.ChatMessage>,arg2:string):Promise<string>;
+
 export function SetLanguage(arg1:string):Promise<void>;
 
 export function SetModel(arg1:string):Promise<void>;

@@ -59,9 +59,16 @@ func extractTextFromStreamJSON(data []byte) string {
 	return string(data)
 }
 
+// ChatMessage - 대화 히스토리 항목
+type ChatMessage struct {
+	Role    string `json:"role"` // "user" | "assistant"
+	Content string `json:"content"`
+}
+
 // AIProvider 인터페이스
 type AIProvider interface {
 	Analyze(ctx context.Context, topic string, explanation string, language string) (string, error)
+	Chat(ctx context.Context, history []ChatMessage, message string) (string, error)
 }
 
 // ─── Claude CLI 프로바이더 ───────────────────────────────
@@ -105,6 +112,11 @@ func (p *ClaudeCLIProvider) Analyze(ctx context.Context, topic string, explanati
 	return extractTextFromStreamJSON(output), nil
 }
 
+func (p *ClaudeCLIProvider) Chat(ctx context.Context, _ []ChatMessage, message string) (string, error) {
+	// sessionID가 설정되어 있으면 세션 이어가기, 없으면 새 대화
+	return p.Analyze(ctx, "", message, "")
+}
+
 func (p *ClaudeCLIProvider) extractSessionID(data []byte) string {
 	type initMsg struct {
 		Type      string `json:"type"`
@@ -141,6 +153,10 @@ func (p *CodexCLIProvider) Analyze(ctx context.Context, topic string, explanatio
 	return string(output), nil
 }
 
+func (p *CodexCLIProvider) Chat(ctx context.Context, _ []ChatMessage, message string) (string, error) {
+	return p.Analyze(ctx, "이전 대화 계속", message, "")
+}
+
 // ─── Anthropic API 프로바이더 ────────────────────────────
 type AnthropicAPIProvider struct {
 	client *anthropic.Client
@@ -162,6 +178,27 @@ func (p *AnthropicAPIProvider) Analyze(ctx context.Context, topic string, explan
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(buildPrompt(topic, explanation, language))),
 		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("Anthropic API 호출 실패: %w", err)
+	}
+	return msg.Content[0].Text, nil
+}
+
+func (p *AnthropicAPIProvider) Chat(ctx context.Context, history []ChatMessage, message string) (string, error) {
+	params := make([]anthropic.MessageParam, 0, len(history)+1)
+	for _, h := range history {
+		if h.Role == "user" {
+			params = append(params, anthropic.NewUserMessage(anthropic.NewTextBlock(h.Content)))
+		} else {
+			params = append(params, anthropic.NewAssistantMessage(anthropic.NewTextBlock(h.Content)))
+		}
+	}
+	params = append(params, anthropic.NewUserMessage(anthropic.NewTextBlock(message)))
+	msg, err := p.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(p.model),
+		MaxTokens: 1024,
+		Messages:  params,
 	})
 	if err != nil {
 		return "", fmt.Errorf("Anthropic API 호출 실패: %w", err)
@@ -196,6 +233,26 @@ func (p *OpenAIProvider) Analyze(ctx context.Context, topic string, explanation 
 	return resp.Choices[0].Message.Content, nil
 }
 
+func (p *OpenAIProvider) Chat(ctx context.Context, history []ChatMessage, message string) (string, error) {
+	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(history)+1)
+	for _, h := range history {
+		if h.Role == "user" {
+			msgs = append(msgs, openai.UserMessage(h.Content))
+		} else {
+			msgs = append(msgs, openai.AssistantMessage(h.Content))
+		}
+	}
+	msgs = append(msgs, openai.UserMessage(message))
+	resp, err := p.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model:    openai.ChatModel(p.model),
+		Messages: msgs,
+	})
+	if err != nil {
+		return "", fmt.Errorf("OpenAI API 호출 실패: %w", err)
+	}
+	return resp.Choices[0].Message.Content, nil
+}
+
 // ─── ChatGPT OAuth 프로바이더 ────────────────────────────
 type ChatGPTOAuthProvider struct {
 	token  *OAuthToken
@@ -213,6 +270,35 @@ func NewChatGPTOAuthProvider(token *OAuthToken, model string) *ChatGPTOAuthProvi
 		model = "gpt-4o"
 	}
 	return &ChatGPTOAuthProvider{token: token, client: &client, model: model}
+}
+
+func (p *ChatGPTOAuthProvider) Chat(ctx context.Context, history []ChatMessage, message string) (string, error) {
+	if p.token.IsExpired() {
+		newToken, err := refreshOAuthToken(ctx, p.token.RefreshToken)
+		if err != nil {
+			return "", fmt.Errorf("토큰 갱신 실패: %w", err)
+		}
+		p.token = newToken
+		client := openai.NewClient(openaiopt.WithAPIKey(newToken.AccessToken))
+		p.client = &client
+	}
+	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(history)+1)
+	for _, h := range history {
+		if h.Role == "user" {
+			msgs = append(msgs, openai.UserMessage(h.Content))
+		} else {
+			msgs = append(msgs, openai.AssistantMessage(h.Content))
+		}
+	}
+	msgs = append(msgs, openai.UserMessage(message))
+	resp, err := p.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model:    openai.ChatModel(p.model),
+		Messages: msgs,
+	})
+	if err != nil {
+		return "", fmt.Errorf("ChatGPT 호출 실패: %w", err)
+	}
+	return resp.Choices[0].Message.Content, nil
 }
 
 func (p *ChatGPTOAuthProvider) Analyze(ctx context.Context, topic string, explanation string, language string) (string, error) {
@@ -431,6 +517,11 @@ func (a *App) GetSessionID() string {
 		return cli.sessionID
 	}
 	return ""
+}
+
+// SendChatMessage - 채팅 히스토리와 함께 메시지 전송 (React 채팅 UI용)
+func (a *App) SendChatMessage(history []ChatMessage, message string) (string, error) {
+	return a.provider.Chat(a.ctx, history, message)
 }
 
 // ContinueConversation - Step3에서 추가 질문 시 세션 이어서 호출

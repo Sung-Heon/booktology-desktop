@@ -22,6 +22,10 @@ export function GetSessionID() {
   return window['go']['main']['App']['GetSessionID']();
 }
 
+export function SendChatMessage(arg1, arg2) {
+  return window['go']['main']['App']['SendChatMessage'](arg1, arg2);
+}
+
 export function SetLanguage(arg1) {
   return window['go']['main']['App']['SetLanguage'](arg1);
 }
