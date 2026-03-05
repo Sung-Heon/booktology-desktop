@@ -14,6 +14,7 @@ import (
 	anthropicopt "github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/openai/openai-go"
 	openaiopt "github.com/openai/openai-go/option"
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // 환경변수에서 특정 키 제거
@@ -113,8 +114,66 @@ func (p *ClaudeCLIProvider) Analyze(ctx context.Context, topic string, explanati
 }
 
 func (p *ClaudeCLIProvider) Chat(ctx context.Context, _ []ChatMessage, message string) (string, error) {
-	// sessionID가 설정되어 있으면 세션 이어가기, 없으면 새 대화
 	return p.Analyze(ctx, "", message, "")
+}
+
+func (p *ClaudeCLIProvider) streamAnalyze(ctx context.Context, topic string, explanation string, language string, emit func(string)) error {
+	prompt := explanation
+	if topic != "" {
+		prompt = buildPrompt(topic, explanation, language)
+	}
+	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
+	if p.model != "" {
+		args = append(args, "--model", p.model)
+	}
+	if p.sessionID != "" {
+		args = append(args, "--resume", p.sessionID)
+	}
+
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Env = removeEnv(os.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe 실패: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("claude CLI 시작 실패: %w", err)
+	}
+
+	type contentDelta struct {
+		Type  string `json:"type"`
+		Delta struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"delta"`
+	}
+	type initMsg struct {
+		Type      string `json:"type"`
+		SessionID string `json:"session_id"`
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		var im initMsg
+		if json.Unmarshal(line, &im) == nil && im.SessionID != "" {
+			p.sessionID = im.SessionID
+		}
+		var cd contentDelta
+		if json.Unmarshal(line, &cd) == nil && cd.Type == "content_block_delta" && cd.Delta.Type == "text_delta" && cd.Delta.Text != "" {
+			emit(cd.Delta.Text)
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("claude CLI 실패: %w\n%s", err, stderr.String())
+	}
+	return nil
 }
 
 func (p *ClaudeCLIProvider) extractSessionID(data []byte) string {
@@ -498,15 +557,32 @@ func (a *App) ConnectChatGPTOAuth() error {
 	return saveConfig(a.config)
 }
 
-// AnalyzeExplanation - React Step3에서 호출 (항상 새 세션)
+// StartSession - Step1 개념 선택 시 Claude CLI 세션 미리 시작 (워밍업)
+func (a *App) StartSession(topic string) error {
+	cli, ok := a.provider.(*ClaudeCLIProvider)
+	if !ok {
+		return nil // Claude CLI가 아니면 불필요
+	}
+	cli.sessionID = "" // 이전 세션 초기화
+	lang := "auto"
+	if a.config != nil {
+		lang = a.config.Language
+	}
+	initMsg := fmt.Sprintf(`We're about to practice the Feynman technique on the topic "%s". Please reply with just: "Ready."`, topic)
+	_, err := cli.Analyze(a.ctx, "", initMsg, lang)
+	return err
+}
+
+// AnalyzeExplanation - React Step3에서 호출 (StartSession으로 워밍업된 세션 재사용)
 func (a *App) AnalyzeExplanation(topic string, explanation string) (string, error) {
 	lang := "auto"
 	if a.config != nil {
 		lang = a.config.Language
 	}
-	// 새 분석마다 세션 초기화
-	if cli, ok := a.provider.(*ClaudeCLIProvider); ok {
-		cli.sessionID = ""
+	// StartSession이 호출되지 않은 경우를 대비해 세션 초기화
+	if cli, ok := a.provider.(*ClaudeCLIProvider); ok && cli.sessionID == "" {
+		// 세션 없으면 새로 시작 (워밍업 안 된 경우)
+		_ = cli
 	}
 	return a.provider.Analyze(a.ctx, topic, explanation, lang)
 }
@@ -522,6 +598,52 @@ func (a *App) GetSessionID() string {
 // SendChatMessage - 채팅 히스토리와 함께 메시지 전송 (React 채팅 UI용)
 func (a *App) SendChatMessage(history []ChatMessage, message string) (string, error) {
 	return a.provider.Chat(a.ctx, history, message)
+}
+
+// AnalyzeStreaming - 스트리밍 분석 (이벤트: stream:chunk, stream:done, stream:error)
+func (a *App) AnalyzeStreaming(topic string, explanation string) {
+	lang := "auto"
+	if a.config != nil {
+		lang = a.config.Language
+	}
+	emit := func(chunk string) {
+		wailsruntime.EventsEmit(a.ctx, "stream:chunk", chunk)
+	}
+	if cli, ok := a.provider.(*ClaudeCLIProvider); ok {
+		if err := cli.streamAnalyze(a.ctx, topic, explanation, lang, emit); err != nil {
+			wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
+			return
+		}
+	} else {
+		result, err := a.provider.Analyze(a.ctx, topic, explanation, lang)
+		if err != nil {
+			wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
+			return
+		}
+		emit(result)
+	}
+	wailsruntime.EventsEmit(a.ctx, "stream:done", "")
+}
+
+// ChatStreaming - 채팅 스트리밍 (이벤트: stream:chunk, stream:done, stream:error)
+func (a *App) ChatStreaming(history []ChatMessage, message string) {
+	emit := func(chunk string) {
+		wailsruntime.EventsEmit(a.ctx, "stream:chunk", chunk)
+	}
+	if cli, ok := a.provider.(*ClaudeCLIProvider); ok {
+		if err := cli.streamAnalyze(a.ctx, "", message, "", emit); err != nil {
+			wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
+			return
+		}
+	} else {
+		result, err := a.provider.Chat(a.ctx, history, message)
+		if err != nil {
+			wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
+			return
+		}
+		emit(result)
+	}
+	wailsruntime.EventsEmit(a.ctx, "stream:done", "")
 }
 
 // ContinueConversation - Step3에서 추가 질문 시 세션 이어서 호출

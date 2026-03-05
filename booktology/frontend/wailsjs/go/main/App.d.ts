@@ -4,6 +4,10 @@ import {main} from '../models';
 
 export function AnalyzeExplanation(arg1:string,arg2:string):Promise<string>;
 
+export function AnalyzeStreaming(arg1:string,arg2:string):Promise<void>;
+
+export function ChatStreaming(arg1:Array<main.ChatMessage>,arg2:string):Promise<void>;
+
 export function ConnectChatGPTOAuth():Promise<void>;
 
 export function ContinueConversation(arg1:string,arg2:string):Promise<string>;
@@ -19,3 +23,5 @@ export function SetLanguage(arg1:string):Promise<void>;
 export function SetModel(arg1:string):Promise<void>;
 
 export function SetProvider(arg1:string,arg2:string):Promise<void>;
+
+export function StartSession(arg1:string):Promise<void>;

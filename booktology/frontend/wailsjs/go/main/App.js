@@ -6,6 +6,14 @@ export function AnalyzeExplanation(arg1, arg2) {
   return window['go']['main']['App']['AnalyzeExplanation'](arg1, arg2);
 }
 
+export function AnalyzeStreaming(arg1, arg2) {
+  return window['go']['main']['App']['AnalyzeStreaming'](arg1, arg2);
+}
+
+export function ChatStreaming(arg1, arg2) {
+  return window['go']['main']['App']['ChatStreaming'](arg1, arg2);
+}
+
 export function ConnectChatGPTOAuth() {
   return window['go']['main']['App']['ConnectChatGPTOAuth']();
 }
@@ -36,4 +44,8 @@ export function SetModel(arg1) {
 
 export function SetProvider(arg1, arg2) {
   return window['go']['main']['App']['SetProvider'](arg1, arg2);
+}
+
+export function StartSession(arg1) {
+  return window['go']['main']['App']['StartSession'](arg1);
 }

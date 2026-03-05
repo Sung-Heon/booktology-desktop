@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { AnalyzeExplanation, SendChatMessage, SetProvider, ConnectChatGPTOAuth, GetConfig, SetModel, SetLanguage } from '../wailsjs/go/main/App'
+import { AnalyzeStreaming, ChatStreaming, StartSession, SetProvider, ConnectChatGPTOAuth, GetConfig, SetModel, SetLanguage } from '../wailsjs/go/main/App'
+import { EventsOn } from '../wailsjs/runtime/runtime'
 
 const MODELS: Record<string, { value: string; label: string }[]> = {
     'claude-cli': [
@@ -83,12 +84,24 @@ function Step1({ onNext }: { onNext: (topic: string) => void }) {
     )
 }
 
-function Step2({ topic, onNext }: { topic: string; onNext: (text: string) => void }) {
+function Step2({ topic, onNext, sessionReady }: { topic: string; onNext: (text: string) => void; sessionReady: boolean | null }) {
     const [text, setText] = useState('')
     return (
         <div className="max-w-2xl w-full">
             <h2 className="text-2xl font-bold mb-2">"{topic}"을 설명해보세요</h2>
-            <p className="text-gray-400 mb-6">초등학생에게 설명한다고 생각하고 자유롭게 써보세요. 틀려도 괜찮아요.</p>
+            <p className="text-gray-400 mb-4">초등학생에게 설명한다고 생각하고 자유롭게 써보세요. 틀려도 괜찮아요.</p>
+            {sessionReady === false && (
+                <div className="flex items-center gap-2 text-xs text-gray-500 mb-3">
+                    <div className="w-2.5 h-2.5 rounded-full border border-indigo-500 border-t-transparent animate-spin" />
+                    Claude CLI 세션 준비 중...
+                </div>
+            )}
+            {sessionReady === true && (
+                <div className="flex items-center gap-2 text-xs text-green-500 mb-3">
+                    <div className="w-2 h-2 rounded-full bg-green-500" />
+                    세션 준비 완료 — 분석이 더 빠르게 시작돼요
+                </div>
+            )}
             <textarea
                 value={text}
                 onChange={e => setText(e.target.value)}
@@ -107,7 +120,7 @@ function Step2({ topic, onNext }: { topic: string; onNext: (text: string) => voi
     )
 }
 
-type ChatMsg = { role: 'user' | 'assistant'; content: string }
+type ChatMsg = { role: 'user' | 'assistant'; content: string; streaming?: boolean }
 
 const PROSE = `prose prose-invert prose-sm max-w-none
     prose-headings:text-white prose-headings:font-bold
@@ -121,50 +134,66 @@ const PROSE = `prose prose-invert prose-sm max-w-none
 function Step3({ topic, explanation, onAnalyzed, onNext }: { topic: string; explanation: string; onAnalyzed: (a: string) => void; onNext: () => void }) {
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState('')
-    const [status, setStatus] = useState('Claude CLI 연결 중...')
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([])
     const [chatInput, setChatInput] = useState('')
     const [chatLoading, setChatLoading] = useState(false)
     const chatEndRef = useRef<HTMLDivElement>(null)
+    const analysisRef = useRef('')
 
     useEffect(() => {
-        const steps: [number, string][] = [
-            [500,  'Claude CLI 실행 중...'],
-            [2000, '설명 분석 중...'],
-            [5000, '이해 갭 파악 중...'],
-            [9000, '핵심 질문 생성 중...'],
-            [14000,'응답 마무리 중...'],
-        ]
-        const timers = steps.map(([ms, msg]) => setTimeout(() => setStatus(msg), ms))
-        AnalyzeExplanation(topic, explanation)
-            .then(res => {
-                onAnalyzed(res)
-                setChatMessages([{ role: 'assistant', content: res }])
-            })
-            .catch(err => setError(String(err)))
-            .finally(() => { setLoading(false); timers.forEach(clearTimeout) })
-        return () => timers.forEach(clearTimeout)
+        // 스트리밍 첫 메시지 자리 만들기
+        setChatMessages([{ role: 'assistant', content: '', streaming: true }])
+
+        const offChunk = EventsOn('stream:chunk', (chunk: string) => {
+            analysisRef.current += chunk
+            setChatMessages([{ role: 'assistant', content: analysisRef.current, streaming: true }])
+        })
+        const offDone = EventsOn('stream:done', () => {
+            setChatMessages([{ role: 'assistant', content: analysisRef.current, streaming: false }])
+            onAnalyzed(analysisRef.current)
+            setLoading(false)
+        })
+        const offError = EventsOn('stream:error', (err: string) => {
+            setError(err)
+            setLoading(false)
+        })
+
+        AnalyzeStreaming(topic, explanation)
+
+        return () => { offChunk(); offDone(); offError() }
     }, [])
 
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }, [chatMessages, chatLoading])
 
-    async function sendMessage() {
+    function sendMessage() {
         const msg = chatInput.trim()
         if (!msg || chatLoading) return
-        const newHistory: ChatMsg[] = [...chatMessages, { role: 'user', content: msg }]
-        setChatMessages(newHistory)
+        const newHistory = [...chatMessages, { role: 'user' as const, content: msg }]
+        setChatMessages([...newHistory, { role: 'assistant' as const, content: '', streaming: true }])
         setChatInput('')
         setChatLoading(true)
-        try {
-            const response = await SendChatMessage(newHistory, msg)
-            setChatMessages([...newHistory, { role: 'assistant', content: response }])
-        } catch (err) {
-            setChatMessages([...newHistory, { role: 'assistant', content: `오류: ${String(err)}` }])
-        } finally {
+
+        const offChunk = EventsOn('stream:chunk', (chunk: string) => {
+            setChatMessages(prev => {
+                const last = prev[prev.length - 1]
+                if (last?.streaming) return [...prev.slice(0, -1), { ...last, content: last.content + chunk }]
+                return prev
+            })
+        })
+        const offDone = EventsOn('stream:done', () => {
+            setChatMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, streaming: false } : m))
             setChatLoading(false)
-        }
+            offChunk(); offDone(); offError()
+        })
+        const offError = EventsOn('stream:error', (err: string) => {
+            setChatMessages(prev => [...prev.slice(0, -1), { role: 'assistant' as const, content: `오류: ${err}`, streaming: false }])
+            setChatLoading(false)
+            offChunk(); offDone(); offError()
+        })
+
+        ChatStreaming(newHistory, msg)
     }
 
     return (
@@ -174,25 +203,26 @@ function Step3({ topic, explanation, onAnalyzed, onNext }: { topic: string; expl
 
             {/* 대화 영역 */}
             <div className="flex-1 overflow-auto bg-gray-900 rounded-xl border border-gray-800 p-4 space-y-4 mb-3">
-                {loading && (
-                    <div className="flex flex-col gap-3 p-2">
-                        <div className="flex items-center gap-3 text-gray-300">
-                            <div className="w-4 h-4 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin shrink-0" />
-                            <span className="text-sm">{status}</span>
-                        </div>
-                        <div className="text-xs text-gray-600">시간이 걸릴 수 있어요.</div>
-                    </div>
-                )}
                 {error && <p className="text-red-400 text-sm">오류: {error}</p>}
                 {chatMessages.map((msg, i) => (
                     <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                         {msg.role === 'assistant' ? (
                             <div className="w-full">
                                 <div className="text-xs text-indigo-400 mb-1 font-medium">AI</div>
-                                <div className={PROSE}>
-                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                                </div>
-                                {i < chatMessages.length - 1 && <div className="mt-4 border-t border-gray-800" />}
+                                {msg.content ? (
+                                    <div className={PROSE}>
+                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                                    </div>
+                                ) : (
+                                    <div className="flex items-center gap-2 text-gray-500 text-sm">
+                                        <div className="w-3 h-3 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
+                                        <span>응답 생성 중...</span>
+                                    </div>
+                                )}
+                                {msg.streaming && msg.content && (
+                                    <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
+                                )}
+                                {i < chatMessages.length - 1 && !msg.streaming && <div className="mt-4 border-t border-gray-800" />}
                             </div>
                         ) : (
                             <div className="max-w-sm bg-indigo-600 rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm text-white">
@@ -201,12 +231,6 @@ function Step3({ topic, explanation, onAnalyzed, onNext }: { topic: string; expl
                         )}
                     </div>
                 ))}
-                {chatLoading && (
-                    <div className="flex items-center gap-2 text-gray-400 text-sm">
-                        <div className="w-3 h-3 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
-                        <span>응답 중...</span>
-                    </div>
-                )}
                 <div ref={chatEndRef} />
             </div>
 
@@ -492,6 +516,7 @@ function App() {
     const [analysis, setAnalysis] = useState('')
     const [sessions, setSessions] = useState<SessionRecord[]>(loadSessions)
     const [selectedSession, setSelectedSession] = useState<SessionRecord | null>(null)
+    const [sessionReady, setSessionReady] = useState<boolean | null>(null)
 
     function saveAndFinish(score: number) {
         const record: SessionRecord = {
@@ -508,6 +533,16 @@ function App() {
         setTopic('')
         setExplanation('')
         setAnalysis('')
+        setSessionReady(null)
+    }
+
+    function handleTopicNext(t: string) {
+        setTopic(t)
+        setStep(2)
+        setSessionReady(false)
+        StartSession(t)
+            .then(() => setSessionReady(true))
+            .catch(() => setSessionReady(null))
     }
 
     return (
@@ -558,8 +593,8 @@ function App() {
                 {page === 'learn' && (
                     <>
                         <StepIndicator current={step} />
-                        {step === 1 && <Step1 onNext={t => { setTopic(t); setStep(2) }} />}
-                        {step === 2 && <Step2 topic={topic} onNext={t => { setExplanation(t); setStep(3) }} />}
+                        {step === 1 && <Step1 onNext={handleTopicNext} />}
+                        {step === 2 && <Step2 topic={topic} onNext={t => { setExplanation(t); setStep(3) }} sessionReady={sessionReady} />}
                         {step === 3 && <Step3 topic={topic} explanation={explanation}
                             onAnalyzed={a => setAnalysis(a)}
                             onNext={() => setStep(4)} />}
