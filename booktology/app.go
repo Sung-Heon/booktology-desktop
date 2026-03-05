@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"time"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	anthropicopt "github.com/anthropics/anthropic-sdk-go/option"
@@ -11,20 +16,127 @@ import (
 	openaiopt "github.com/openai/openai-go/option"
 )
 
-// AIProvider 인터페이스 - 모든 프로바이더가 구현해야 함
+// 환경변수에서 특정 키 제거
+func removeEnv(env []string, keys ...string) []string {
+	result := make([]string, 0, len(env))
+	for _, e := range env {
+		skip := false
+		for _, key := range keys {
+			if len(e) >= len(key)+1 && e[:len(key)+1] == key+"=" {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
+// stream-json 출력에서 텍스트 추출
+func extractTextFromStreamJSON(data []byte) string {
+	type resultMsg struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+		Result  string `json:"result"`
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var msg resultMsg
+		if err := json.Unmarshal(line, &msg); err != nil {
+			continue
+		}
+		if msg.Type == "result" && msg.Subtype == "success" && msg.Result != "" {
+			return msg.Result
+		}
+	}
+	// fallback: 원본 반환
+	return string(data)
+}
+
+// AIProvider 인터페이스
 type AIProvider interface {
-	Analyze(ctx context.Context, topic string, explanation string) (string, error)
+	Analyze(ctx context.Context, topic string, explanation string, language string) (string, error)
 }
 
 // ─── Claude CLI 프로바이더 ───────────────────────────────
-type ClaudeCLIProvider struct{}
+type ClaudeCLIProvider struct {
+	model     string
+	sessionID string
+}
 
-func (p *ClaudeCLIProvider) Analyze(ctx context.Context, topic string, explanation string) (string, error) {
-	prompt := buildPrompt(topic, explanation)
-	cmd := exec.CommandContext(ctx, "claude", "-p", prompt)
+func (p *ClaudeCLIProvider) Analyze(ctx context.Context, topic string, explanation string, language string) (string, error) {
+	prompt := explanation
+	if topic != "" {
+		prompt = buildPrompt(topic, explanation, language)
+	}
+	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
+	if p.model != "" {
+		args = append(args, "--model", p.model)
+	}
+	if p.sessionID != "" {
+		args = append(args, "--resume", p.sessionID)
+	}
+
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Env = removeEnv(os.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+
+	t0 := time.Now()
+	fmt.Printf("[Claude CLI] 시작: %s\n", t0.Format("15:04:05.000"))
+	fmt.Printf("[Claude CLI] 명령어: claude %v\n", args[:2]) // 프롬프트 제외
+
+	output, err := cmd.CombinedOutput()
+	elapsed := time.Since(t0)
+	fmt.Printf("[Claude CLI] 완료: %.2fs\n", elapsed.Seconds())
+
+	if err != nil {
+		return "", fmt.Errorf("claude CLI 실행 실패: %w\n출력: %s", err, string(output))
+	}
+
+	if sid := p.extractSessionID(output); sid != "" {
+		p.sessionID = sid
+		fmt.Printf("[Claude CLI] 세션ID: %s\n", sid)
+	}
+	return extractTextFromStreamJSON(output), nil
+}
+
+func (p *ClaudeCLIProvider) extractSessionID(data []byte) string {
+	type initMsg struct {
+		Type      string `json:"type"`
+		SessionID string `json:"session_id"`
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		var msg initMsg
+		if json.Unmarshal(scanner.Bytes(), &msg) == nil && msg.SessionID != "" {
+			return msg.SessionID
+		}
+	}
+	return ""
+}
+
+// ─── Codex CLI 프로바이더 ────────────────────────────────
+// oh-my-claudecode와 동일한 방식: codex exec -m {model} --json --full-auto
+type CodexCLIProvider struct {
+	model string
+}
+
+func (p *CodexCLIProvider) Analyze(ctx context.Context, topic string, explanation string, language string) (string, error) {
+	model := p.model
+	if model == "" {
+		model = "gpt-5.3-codex"
+	}
+	prompt := buildPrompt(topic, explanation, language)
+	cmd := exec.CommandContext(ctx, "codex", "exec", "-m", model,
+		"--json", "--full-auto", "--skip-git-repo-check", "--", prompt)
 	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("claude CLI 실행 실패: %w", err)
+		return "", fmt.Errorf("codex CLI 실행 실패: %w", err)
 	}
 	return string(output), nil
 }
@@ -32,19 +144,23 @@ func (p *ClaudeCLIProvider) Analyze(ctx context.Context, topic string, explanati
 // ─── Anthropic API 프로바이더 ────────────────────────────
 type AnthropicAPIProvider struct {
 	client *anthropic.Client
+	model  string
 }
 
-func NewAnthropicAPIProvider(apiKey string) *AnthropicAPIProvider {
+func NewAnthropicAPIProvider(apiKey string, model string) *AnthropicAPIProvider {
 	client := anthropic.NewClient(anthropicopt.WithAPIKey(apiKey))
-	return &AnthropicAPIProvider{client: &client}
+	if model == "" {
+		model = string(anthropic.ModelClaude3_5HaikuLatest)
+	}
+	return &AnthropicAPIProvider{client: &client, model: model}
 }
 
-func (p *AnthropicAPIProvider) Analyze(ctx context.Context, topic string, explanation string) (string, error) {
+func (p *AnthropicAPIProvider) Analyze(ctx context.Context, topic string, explanation string, language string) (string, error) {
 	msg, err := p.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.ModelClaude3_5HaikuLatest,
+		Model:     anthropic.Model(p.model),
 		MaxTokens: 1024,
 		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(buildPrompt(topic, explanation))),
+			anthropic.NewUserMessage(anthropic.NewTextBlock(buildPrompt(topic, explanation, language))),
 		},
 	})
 	if err != nil {
@@ -53,21 +169,25 @@ func (p *AnthropicAPIProvider) Analyze(ctx context.Context, topic string, explan
 	return msg.Content[0].Text, nil
 }
 
-// ─── OpenAI API Key 프로바이더 ──────────────────────────
+// ─── OpenAI API Key 프로바이더 ───────────────────────────
 type OpenAIProvider struct {
 	client *openai.Client
+	model  string
 }
 
-func NewOpenAIProvider(apiKey string) *OpenAIProvider {
+func NewOpenAIProvider(apiKey string, model string) *OpenAIProvider {
 	client := openai.NewClient(openaiopt.WithAPIKey(apiKey))
-	return &OpenAIProvider{client: &client}
+	if model == "" {
+		model = string(openai.ChatModelGPT4oMini)
+	}
+	return &OpenAIProvider{client: &client, model: model}
 }
 
-func (p *OpenAIProvider) Analyze(ctx context.Context, topic string, explanation string) (string, error) {
+func (p *OpenAIProvider) Analyze(ctx context.Context, topic string, explanation string, language string) (string, error) {
 	resp, err := p.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model: openai.ChatModelGPT4oMini,
+		Model: openai.ChatModel(p.model),
 		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage(buildPrompt(topic, explanation)),
+			openai.UserMessage(buildPrompt(topic, explanation, language)),
 		},
 	})
 	if err != nil {
@@ -80,15 +200,22 @@ func (p *OpenAIProvider) Analyze(ctx context.Context, topic string, explanation 
 type ChatGPTOAuthProvider struct {
 	token  *OAuthToken
 	client *openai.Client
+	model  string
 }
 
-func NewChatGPTOAuthProvider(token *OAuthToken) *ChatGPTOAuthProvider {
-	client := openai.NewClient(openaiopt.WithAPIKey(token.AccessToken))
-	return &ChatGPTOAuthProvider{token: token, client: &client}
+func NewChatGPTOAuthProvider(token *OAuthToken, model string) *ChatGPTOAuthProvider {
+	client := openai.NewClient(
+		openaiopt.WithAPIKey(token.AccessToken),
+		openaiopt.WithBaseURL("https://api.openai.com/v1/"),
+		openaiopt.WithHeader("Authorization", "Bearer "+token.AccessToken),
+	)
+	if model == "" {
+		model = "gpt-4o"
+	}
+	return &ChatGPTOAuthProvider{token: token, client: &client, model: model}
 }
 
-func (p *ChatGPTOAuthProvider) Analyze(ctx context.Context, topic string, explanation string) (string, error) {
-	// 토큰 만료 시 자동 갱신
+func (p *ChatGPTOAuthProvider) Analyze(ctx context.Context, topic string, explanation string, language string) (string, error) {
 	if p.token.IsExpired() {
 		newToken, err := refreshOAuthToken(ctx, p.token.RefreshToken)
 		if err != nil {
@@ -98,11 +225,10 @@ func (p *ChatGPTOAuthProvider) Analyze(ctx context.Context, topic string, explan
 		client := openai.NewClient(openaiopt.WithAPIKey(newToken.AccessToken))
 		p.client = &client
 	}
-
 	resp, err := p.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model: openai.ChatModelGPT4oMini,
+		Model: openai.ChatModel(p.model),
 		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage(buildPrompt(topic, explanation)),
+			openai.UserMessage(buildPrompt(topic, explanation, language)),
 		},
 	})
 	if err != nil {
@@ -112,26 +238,38 @@ func (p *ChatGPTOAuthProvider) Analyze(ctx context.Context, topic string, explan
 }
 
 // ─── 공통 프롬프트 ───────────────────────────────────────
-func buildPrompt(topic string, explanation string) string {
-	return fmt.Sprintf(`학생이 "%s"라는 개념을 아래와 같이 설명했습니다.
+func buildPrompt(topic string, explanation string, language string) string {
+	langInstruction := map[string]string{
+		"auto": "Respond in the same language as the student's explanation above.",
+		"ko":   "한국어로 답변해주세요.",
+		"en":   "Please respond in English.",
+		"ja":   "日本語で答えてください。",
+		"zh":   "请用中文回答。",
+	}
+	lang, ok := langInstruction[language]
+	if !ok {
+		lang = langInstruction["auto"]
+	}
+	return fmt.Sprintf(`A student explained the concept of "%s" as follows:
 
 ---
 %s
 ---
 
-파인만 학습법 튜터로서 다음을 분석해주세요:
-1. 잘 이해한 부분
-2. 이해 갭 또는 틀린 부분
-3. 보완이 필요한 핵심 질문 2-3개
+As a Feynman learning method tutor, please analyze:
+1. What they understood well
+2. Gaps or misconceptions in understanding
+3. 2-3 key questions to deepen understanding
 
-한국어로 친절하게 답변해주세요.`, topic, explanation)
+%s`, topic, explanation, lang)
 }
 
 // ─── App ─────────────────────────────────────────────────
 type App struct {
-	ctx      context.Context
-	provider AIProvider
-	config   *AppConfig
+	ctx           context.Context
+	provider      AIProvider
+	config        *AppConfig
+	lastSessionID string // Claude CLI 세션 ID 저장
 }
 
 func NewApp() *App {
@@ -141,22 +279,25 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
-	// 저장된 설정 로드
 	cfg, err := loadConfig()
-	if err != nil {
-		cfg = &AppConfig{ProviderType: "claude-cli"}
+	if err != nil || cfg == nil {
+		cfg = &AppConfig{ProviderType: "claude-cli", Language: "auto"}
+	}
+	if cfg.Language == "" {
+		cfg.Language = "auto"
 	}
 	a.config = cfg
 
-	// 저장된 프로바이더로 초기화
 	switch cfg.ProviderType {
+	case "claude-cli":
+		a.provider = &ClaudeCLIProvider{model: cfg.Model}
 	case "anthropic":
 		if cfg.APIKey != "" {
-			a.provider = NewAnthropicAPIProvider(cfg.APIKey)
+			a.provider = NewAnthropicAPIProvider(cfg.APIKey, cfg.Model)
 		}
 	case "openai":
 		if cfg.APIKey != "" {
-			a.provider = NewOpenAIProvider(cfg.APIKey)
+			a.provider = NewOpenAIProvider(cfg.APIKey, cfg.Model)
 		}
 	case "chatgpt-oauth":
 		if cfg.OAuthToken != nil {
@@ -165,51 +306,103 @@ func (a *App) startup(ctx context.Context) {
 				RefreshToken: cfg.OAuthToken.RefreshToken,
 				ExpiresAt:    cfg.OAuthToken.ExpiresAt,
 			}
-			a.provider = NewChatGPTOAuthProvider(token)
+			a.provider = NewChatGPTOAuthProvider(token, cfg.Model)
 		}
 	}
 }
 
-// GetProviderType - 현재 활성 프로바이더 반환 (React UI용)
-func (a *App) GetProviderType() string {
+// GetConfig - 현재 설정 반환 (React UI용)
+func (a *App) GetConfig() AppConfig {
 	if a.config == nil {
-		return "claude-cli"
+		return AppConfig{ProviderType: "claude-cli", Language: "auto"}
 	}
-	return a.config.ProviderType
+	// API 키와 토큰은 보내지 않음 (보안)
+	return AppConfig{
+		ProviderType: a.config.ProviderType,
+		Model:        a.config.Model,
+		Language:     a.config.Language,
+	}
 }
 
-// SetProvider - React에서 프로바이더 설정 시 호출
+// SetProvider - 프로바이더 + API 키 설정
 func (a *App) SetProvider(providerType string, apiKey string) error {
+	model := ""
+	if a.config != nil {
+		model = a.config.Model
+	}
 	switch providerType {
 	case "claude-cli":
-		a.provider = &ClaudeCLIProvider{}
+		a.provider = &ClaudeCLIProvider{model: model}
+	case "codex-cli":
+		a.provider = &CodexCLIProvider{model: model}
 	case "anthropic":
 		if apiKey == "" {
 			return fmt.Errorf("Anthropic API 키가 필요합니다")
 		}
-		a.provider = NewAnthropicAPIProvider(apiKey)
+		a.provider = NewAnthropicAPIProvider(apiKey, model)
 	case "openai":
 		if apiKey == "" {
 			return fmt.Errorf("OpenAI API 키가 필요합니다")
 		}
-		a.provider = NewOpenAIProvider(apiKey)
+		a.provider = NewOpenAIProvider(apiKey, model)
+	case "chatgpt-oauth":
+		// OAuth는 ConnectChatGPTOAuth로만 설정, 여기선 기존 토큰 유지
+		if a.config != nil && a.config.OAuthToken != nil {
+			token := &OAuthToken{
+				AccessToken:  a.config.OAuthToken.AccessToken,
+				RefreshToken: a.config.OAuthToken.RefreshToken,
+				ExpiresAt:    a.config.OAuthToken.ExpiresAt,
+			}
+			a.provider = NewChatGPTOAuthProvider(token, model)
+		}
 	default:
 		return fmt.Errorf("알 수 없는 프로바이더: %s", providerType)
 	}
-
-	a.config = &AppConfig{ProviderType: providerType, APIKey: apiKey}
+	lang := "auto"
+	if a.config != nil && a.config.Language != "" {
+		lang = a.config.Language
+	}
+	a.config = &AppConfig{ProviderType: providerType, APIKey: apiKey, Model: model, Language: lang}
 	return saveConfig(a.config)
 }
 
-// ConnectChatGPTOAuth - 브라우저 OAuth 시작 (React에서 호출)
+// SetModel - 모델 변경
+func (a *App) SetModel(model string) error {
+	if a.config == nil {
+		return fmt.Errorf("먼저 프로바이더를 설정하세요")
+	}
+	a.config.Model = model
+	// 프로바이더 재생성
+	return a.SetProvider(a.config.ProviderType, a.config.APIKey)
+}
+
+// SetLanguage - 응답 언어 변경
+func (a *App) SetLanguage(language string) error {
+	if a.config == nil {
+		a.config = &AppConfig{ProviderType: "claude-cli", Language: language}
+	} else {
+		a.config.Language = language
+	}
+	return saveConfig(a.config)
+}
+
+// ConnectChatGPTOAuth - 브라우저 OAuth 시작
 func (a *App) ConnectChatGPTOAuth() error {
 	token, err := StartOpenAIOAuth(a.ctx)
 	if err != nil {
 		return err
 	}
-	a.provider = NewChatGPTOAuthProvider(token)
+	model := ""
+	lang := "auto"
+	if a.config != nil {
+		model = a.config.Model
+		lang = a.config.Language
+	}
+	a.provider = NewChatGPTOAuthProvider(token, model)
 	a.config = &AppConfig{
 		ProviderType: "chatgpt-oauth",
+		Model:        model,
+		Language:     lang,
 		OAuthToken: &SavedToken{
 			AccessToken:  token.AccessToken,
 			RefreshToken: token.RefreshToken,
@@ -219,7 +412,41 @@ func (a *App) ConnectChatGPTOAuth() error {
 	return saveConfig(a.config)
 }
 
-// AnalyzeExplanation - React Step3에서 호출
+// AnalyzeExplanation - React Step3에서 호출 (항상 새 세션)
 func (a *App) AnalyzeExplanation(topic string, explanation string) (string, error) {
-	return a.provider.Analyze(a.ctx, topic, explanation)
+	lang := "auto"
+	if a.config != nil {
+		lang = a.config.Language
+	}
+	// 새 분석마다 세션 초기화
+	if cli, ok := a.provider.(*ClaudeCLIProvider); ok {
+		cli.sessionID = ""
+	}
+	return a.provider.Analyze(a.ctx, topic, explanation, lang)
+}
+
+// GetSessionID - 현재 Claude CLI 세션 ID 반환
+func (a *App) GetSessionID() string {
+	if cli, ok := a.provider.(*ClaudeCLIProvider); ok {
+		return cli.sessionID
+	}
+	return ""
+}
+
+// ContinueConversation - Step3에서 추가 질문 시 세션 이어서 호출
+func (a *App) ContinueConversation(sessionID string, message string) (string, error) {
+	lang := "auto"
+	if a.config != nil {
+		lang = a.config.Language
+	}
+	// Claude CLI인 경우 세션 재사용
+	if cli, ok := a.provider.(*ClaudeCLIProvider); ok {
+		prev := cli.sessionID
+		cli.sessionID = sessionID
+		result, err := a.provider.Analyze(a.ctx, "", message, lang)
+		cli.sessionID = prev
+		return result, err
+	}
+	// 다른 프로바이더는 그냥 새 호출
+	return a.provider.Analyze(a.ctx, "이전 대화 계속", message, lang)
 }

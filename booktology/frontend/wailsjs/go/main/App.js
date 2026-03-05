@@ -10,8 +10,24 @@ export function ConnectChatGPTOAuth() {
   return window['go']['main']['App']['ConnectChatGPTOAuth']();
 }
 
-export function GetProviderType() {
-  return window['go']['main']['App']['GetProviderType']();
+export function ContinueConversation(arg1, arg2) {
+  return window['go']['main']['App']['ContinueConversation'](arg1, arg2);
+}
+
+export function GetConfig() {
+  return window['go']['main']['App']['GetConfig']();
+}
+
+export function GetSessionID() {
+  return window['go']['main']['App']['GetSessionID']();
+}
+
+export function SetLanguage(arg1) {
+  return window['go']['main']['App']['SetLanguage'](arg1);
+}
+
+export function SetModel(arg1) {
+  return window['go']['main']['App']['SetModel'](arg1);
 }
 
 export function SetProvider(arg1, arg2) {

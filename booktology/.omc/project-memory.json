@@ -1,0 +1,138 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1772707884727,
+  "projectRoot": "/Users/sungheon/booktology/booktology",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Go",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "go.mod"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "go",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "build": {
+      "path": "build",
+      "purpose": "Build output",
+      "fileCount": 2,
+      "lastAccessed": 1772707884706,
+      "keyFiles": [
+        "README.md",
+        "appicon.png"
+      ]
+    },
+    "frontend": {
+      "path": "frontend",
+      "purpose": null,
+      "fileCount": 7,
+      "lastAccessed": 1772707884720,
+      "keyFiles": [
+        "index.html",
+        "package-lock.json",
+        "package.json",
+        "package.json.md5",
+        "tsconfig.json"
+      ]
+    },
+    "build/bin": {
+      "path": "build/bin",
+      "purpose": "Executable scripts",
+      "fileCount": 0,
+      "lastAccessed": 1772707884722,
+      "keyFiles": []
+    },
+    "frontend/dist": {
+      "path": "frontend/dist",
+      "purpose": "Distribution/build output",
+      "fileCount": 1,
+      "lastAccessed": 1772707884725,
+      "keyFiles": [
+        "index.html"
+      ]
+    },
+    "frontend/node_modules": {
+      "path": "frontend/node_modules",
+      "purpose": "Dependencies",
+      "fileCount": 1,
+      "lastAccessed": 1772707884726,
+      "keyFiles": []
+    },
+    "frontend/src": {
+      "path": "frontend/src",
+      "purpose": "Source code",
+      "fileCount": 5,
+      "lastAccessed": 1772707884726,
+      "keyFiles": [
+        "App.css",
+        "App.tsx",
+        "main.tsx"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "app.go",
+      "accessCount": 25,
+      "lastAccessed": 1772714871917,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/App.tsx",
+      "accessCount": 20,
+      "lastAccessed": 1772715105774,
+      "type": "file"
+    },
+    {
+      "path": "oauth.go",
+      "accessCount": 4,
+      "lastAccessed": 1772710632540,
+      "type": "file"
+    },
+    {
+      "path": "config.go",
+      "accessCount": 2,
+      "lastAccessed": 1772711122142,
+      "type": "file"
+    },
+    {
+      "path": "frontend/vite.config.ts",
+      "accessCount": 1,
+      "lastAccessed": 1772713728342,
+      "type": "file"
+    },
+    {
+      "path": "frontend/src/style.css",
+      "accessCount": 1,
+      "lastAccessed": 1772713737243,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

@@ -1,5 +1,38 @@
 import { useState, useEffect } from 'react'
-import { AnalyzeExplanation, SetProvider, ConnectChatGPTOAuth, GetProviderType } from '../wailsjs/go/main/App'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { AnalyzeExplanation, SetProvider, ConnectChatGPTOAuth, GetConfig, SetModel, SetLanguage } from '../wailsjs/go/main/App'
+
+const MODELS: Record<string, { value: string; label: string }[]> = {
+    'claude-cli': [
+        { value: '', label: '기본값' },
+        { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+        { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+        { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+    ],
+    'anthropic': [
+        { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (빠름)' },
+        { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+        { value: 'claude-opus-4-6', label: 'Claude Opus 4.6 (강력)' },
+    ],
+    'openai': [
+        { value: 'gpt-4o-mini', label: 'GPT-4o Mini (빠름)' },
+        { value: 'gpt-4o', label: 'GPT-4o' },
+        { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
+    ],
+    'chatgpt-oauth': [
+        { value: 'gpt-4o-mini', label: 'GPT-4o Mini (빠름)' },
+        { value: 'gpt-4o', label: 'GPT-4o' },
+    ],
+}
+
+const LANGUAGES = [
+    { value: 'auto', label: '자동 감지 (설명 언어로 응답)' },
+    { value: 'ko', label: '한국어' },
+    { value: 'en', label: 'English' },
+    { value: 'ja', label: '日本語' },
+    { value: 'zh', label: '中文' },
+]
 
 const STEPS = [
     { num: 1, label: '개념 선택' },
@@ -74,26 +107,62 @@ function Step2({ topic, onNext }: { topic: string; onNext: (text: string) => voi
     )
 }
 
-function Step3({ topic, explanation, onNext }: { topic: string; explanation: string; onNext: () => void }) {
+function Step3({ topic, explanation, onAnalyzed, onNext }: { topic: string; explanation: string; onAnalyzed: (a: string) => void; onNext: () => void }) {
     const [result, setResult] = useState('')
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState('')
 
+    const [status, setStatus] = useState('Claude CLI 연결 중...')
+
     useEffect(() => {
+        const steps = [
+            [500,  'Claude CLI 실행 중...'],
+            [2000, '설명 분석 중...'],
+            [5000, '이해 갭 파악 중...'],
+            [9000, '핵심 질문 생성 중...'],
+            [14000,'응답 마무리 중...'],
+        ] as const
+        const timers = steps.map(([ms, msg]) => setTimeout(() => setStatus(msg), ms))
+
         AnalyzeExplanation(topic, explanation)
-            .then(res => setResult(res))
+            .then(res => { setResult(res); onAnalyzed(res) })
             .catch(err => setError(String(err)))
-            .finally(() => setLoading(false))
+            .finally(() => { setLoading(false); timers.forEach(clearTimeout) })
+
+        return () => timers.forEach(clearTimeout)
     }, [])
 
     return (
         <div className="max-w-2xl w-full">
-            <h2 className="text-2xl font-bold mb-2">Claude 분석 결과</h2>
+            <h2 className="text-2xl font-bold mb-2">AI 분석 결과</h2>
             <p className="text-gray-400 mb-6">이해 갭과 보완이 필요한 부분이에요.</p>
             <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 mb-4 text-gray-300 text-sm leading-relaxed min-h-40">
-                {loading && <p className="text-gray-500 animate-pulse">Claude가 분석 중...</p>}
+                {loading && (
+                    <div className="flex flex-col gap-3">
+                        <div className="flex items-center gap-3 text-gray-300">
+                            <div className="w-4 h-4 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin shrink-0" />
+                            <span className="text-sm">{status}</span>
+                        </div>
+                        <div className="text-xs text-gray-600">시간이 걸릴 수 있어요. Claude CLI는 매 요청마다 초기화돼요.</div>
+                    </div>
+                )}
                 {error && <p className="text-red-400">오류: {error}</p>}
-                {result && <p className="whitespace-pre-wrap">{result}</p>}
+                {result && (
+                    <div className="prose prose-invert prose-sm max-w-none
+                        prose-headings:text-white prose-headings:font-bold
+                        prose-h1:text-xl prose-h2:text-lg prose-h3:text-base prose-h3:text-indigo-300
+                        prose-p:text-gray-300 prose-p:leading-relaxed
+                        prose-strong:text-white
+                        prose-ul:text-gray-300 prose-ol:text-gray-300 prose-li:text-gray-300
+                        prose-blockquote:border-indigo-500 prose-blockquote:text-gray-400
+                        prose-code:text-green-400 prose-code:bg-gray-900 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded
+                        prose-pre:bg-gray-900 prose-pre:text-green-400
+                        prose-hr:border-gray-700">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {result}
+                        </ReactMarkdown>
+                    </div>
+                )}
             </div>
             <button
                 onClick={onNext}
@@ -106,8 +175,9 @@ function Step3({ topic, explanation, onNext }: { topic: string; explanation: str
     )
 }
 
-function Step4({ topic, onRestart }: { topic: string; onRestart: () => void }) {
+function Step4({ topic, onRestart, onSave }: { topic: string; onRestart: () => void; onSave: (score: number) => void }) {
     const [score, setScore] = useState(0)
+    const [saved, setSaved] = useState(false)
     return (
         <div className="max-w-xl">
             <h2 className="text-2xl font-bold mb-2">학습 완료!</h2>
@@ -127,12 +197,21 @@ function Step4({ topic, onRestart }: { topic: string; onRestart: () => void }) {
                     ))}
                 </div>
             </div>
-            <button
-                onClick={onRestart}
-                className="w-full bg-gray-700 hover:bg-gray-600 rounded-lg py-3 font-semibold transition-colors"
-            >
-                새 개념 학습하기
-            </button>
+            <div className="flex gap-3">
+                <button
+                    onClick={() => { if (!saved) { onSave(score); setSaved(true) } }}
+                    disabled={score === 0 || saved}
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg py-3 font-semibold transition-colors"
+                >
+                    {saved ? '저장됨 ✓' : '기록 저장'}
+                </button>
+                <button
+                    onClick={onRestart}
+                    className="flex-1 bg-gray-700 hover:bg-gray-600 rounded-lg py-3 font-semibold transition-colors"
+                >
+                    새 개념 학습하기
+                </button>
+            </div>
         </div>
     )
 }
@@ -143,19 +222,25 @@ function Settings({ onBack }: { onBack: () => void }) {
     const [provider, setProvider] = useState<ProviderType>('claude-cli')
     const [activeProvider, setActiveProvider] = useState<ProviderType>('claude-cli')
     const [apiKey, setApiKey] = useState('')
+    const [model, setModel] = useState('')
+    const [language, setLanguage] = useState('auto')
     const [saved, setSaved] = useState(false)
     const [error, setError] = useState('')
     const [connecting, setConnecting] = useState(false)
 
     useEffect(() => {
-        GetProviderType().then(p => {
-            setActiveProvider(p as ProviderType)
-            setProvider(p as ProviderType)
+        GetConfig().then(cfg => {
+            setActiveProvider(cfg.provider_type as ProviderType)
+            setProvider(cfg.provider_type as ProviderType)
+            setModel(cfg.model || '')
+            setLanguage(cfg.language || 'auto')
         })
     }, [])
 
     function save() {
         SetProvider(provider, apiKey)
+            .then(() => SetModel(model))
+            .then(() => SetLanguage(language))
             .then(() => { setSaved(true); setError(''); setActiveProvider(provider) })
             .catch(err => setError(String(err)))
     }
@@ -164,6 +249,8 @@ function Settings({ onBack }: { onBack: () => void }) {
         setConnecting(true)
         setError('')
         ConnectChatGPTOAuth()
+            .then(() => SetModel(model))
+            .then(() => SetLanguage(language))
             .then(() => { setSaved(true); setActiveProvider('chatgpt-oauth') })
             .catch(err => setError(String(err)))
             .finally(() => setConnecting(false))
@@ -176,22 +263,25 @@ function Settings({ onBack }: { onBack: () => void }) {
 
             <div className="space-y-3 mb-6">
                 {([
-                    { id: 'claude-cli', label: 'Claude Code CLI', desc: '로컬 claude CLI 사용 (느림, API 키 불필요)' },
-                    { id: 'anthropic', label: 'Anthropic API', desc: 'Claude API 직접 호출 (빠름, API 키 필요)' },
-                    { id: 'openai', label: 'OpenAI API 키', desc: 'ChatGPT API 키로 연결' },
-                    { id: 'chatgpt-oauth', label: 'ChatGPT OAuth', desc: 'ChatGPT Plus/Pro 구독으로 브라우저 로그인' },
+                    { id: 'claude-cli', label: 'Claude Code CLI', desc: '로컬 claude CLI 사용 (API 키 불필요)', dim: false },
+                    { id: 'anthropic', label: 'Anthropic API', desc: 'Claude API 직접 호출 (빠름, API 키 필요)', dim: true },
+                    { id: 'openai', label: 'OpenAI API 키', desc: 'ChatGPT API 키로 연결', dim: true },
+                    { id: 'chatgpt-oauth', label: 'ChatGPT OAuth', desc: 'ChatGPT Plus/Pro 구독으로 브라우저 로그인', dim: true },
                 ] as const).map(p => (
                     <div
                         key={p.id}
-                        onClick={() => { setProvider(p.id); setApiKey(''); setSaved(false) }}
-                        className={`p-4 rounded-xl border cursor-pointer transition-colors
-                            ${provider === p.id ? 'border-indigo-500 bg-indigo-950' : 'border-gray-700 bg-gray-800 hover:border-gray-600'}`}
+                        onClick={() => { if (!p.dim) { setProvider(p.id); setApiKey(''); setSaved(false) } }}
+                        className={`p-4 rounded-xl border transition-colors
+                            ${p.dim ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}
+                            ${!p.dim && provider === p.id ? 'border-indigo-500 bg-indigo-950' : 'border-gray-700 bg-gray-800'}
+                            ${!p.dim && provider !== p.id ? 'hover:border-gray-600' : ''}`}
                     >
                         <div className="flex items-center gap-2">
                             <span className="font-medium">{p.label}</span>
                             {activeProvider === p.id && (
                                 <span className="text-xs bg-green-600 text-white px-2 py-0.5 rounded-full">활성</span>
                             )}
+                            {p.dim && <span className="text-xs text-gray-600">준비 중</span>}
                         </div>
                         <div className="text-sm text-gray-400 mt-1">{p.desc}</div>
                     </div>
@@ -208,8 +298,36 @@ function Settings({ onBack }: { onBack: () => void }) {
                 />
             )}
 
+            {/* 모델 선택 */}
+            <div className="mb-4">
+                <label className="block text-sm text-gray-400 mb-2">모델</label>
+                <select
+                    value={model}
+                    onChange={e => { setModel(e.target.value); setSaved(false) }}
+                    className="w-full bg-gray-800 rounded-lg px-4 py-3 text-white outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                    {(MODELS[provider] || []).map(m => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                </select>
+            </div>
+
+            {/* 언어 선택 */}
+            <div className="mb-6">
+                <label className="block text-sm text-gray-400 mb-2">응답 언어</label>
+                <select
+                    value={language}
+                    onChange={e => { setLanguage(e.target.value); setSaved(false) }}
+                    className="w-full bg-gray-800 rounded-lg px-4 py-3 text-white outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                    {LANGUAGES.map(l => (
+                        <option key={l.value} value={l.value}>{l.label}</option>
+                    ))}
+                </select>
+            </div>
+
             {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
-            {saved && <p className="text-green-400 text-sm mb-3">연결됐어요!</p>}
+            {saved && <p className="text-green-400 text-sm mb-3">저장됐어요!</p>}
 
             <div className="flex gap-3">
                 {provider === 'chatgpt-oauth' ? (
@@ -233,47 +351,151 @@ function Settings({ onBack }: { onBack: () => void }) {
     )
 }
 
-type Page = 'learn' | 'settings'
+type Page = 'learn' | 'settings' | 'history'
+
+interface SessionRecord {
+    id: string
+    topic: string
+    explanation: string
+    analysis: string
+    score: number
+    createdAt: string
+}
+
+function loadSessions(): SessionRecord[] {
+    try { return JSON.parse(localStorage.getItem('booktology-sessions') || '[]') }
+    catch { return [] }
+}
+
+function saveSession(s: SessionRecord) {
+    const sessions = loadSessions()
+    localStorage.setItem('booktology-sessions', JSON.stringify([s, ...sessions].slice(0, 50)))
+}
+
+function HistoryView({ sessions, onSelect }: { sessions: SessionRecord[]; onSelect: (s: SessionRecord) => void }) {
+    if (sessions.length === 0) return (
+        <div className="text-gray-500 text-sm mt-8">아직 학습 기록이 없어요.</div>
+    )
+    return (
+        <div className="max-w-2xl w-full">
+            <h2 className="text-2xl font-bold mb-6">학습 기록</h2>
+            <div className="space-y-3">
+                {sessions.map(s => (
+                    <div key={s.id} onClick={() => onSelect(s)}
+                        className="bg-gray-900 rounded-xl p-4 border border-gray-800 hover:border-indigo-500 cursor-pointer transition-colors">
+                        <div className="flex items-center justify-between mb-1">
+                            <span className="font-semibold text-white">{s.topic}</span>
+                            {s.score > 0 && <span className="text-xs bg-indigo-900 text-indigo-300 px-2 py-0.5 rounded-full">이해도 {s.score}/10</span>}
+                        </div>
+                        <p className="text-gray-500 text-xs">{new Date(s.createdAt).toLocaleString('ko-KR')}</p>
+                        <p className="text-gray-400 text-sm mt-2 line-clamp-2">{s.explanation}</p>
+                    </div>
+                ))}
+            </div>
+        </div>
+    )
+}
+
+function SessionDetail({ session, onBack }: { session: SessionRecord; onBack: () => void }) {
+    return (
+        <div className="max-w-2xl w-full">
+            <button onClick={onBack} className="text-gray-400 hover:text-white text-sm mb-6">← 목록으로</button>
+            <h2 className="text-2xl font-bold mb-1">{session.topic}</h2>
+            <p className="text-gray-500 text-xs mb-6">{new Date(session.createdAt).toLocaleString('ko-KR')}</p>
+            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800 mb-4">
+                <p className="text-xs text-gray-500 mb-2">내 설명</p>
+                <p className="text-gray-300 text-sm whitespace-pre-wrap">{session.explanation}</p>
+            </div>
+            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+                <p className="text-xs text-gray-500 mb-2">AI 분석</p>
+                <div className="prose prose-invert prose-sm max-w-none prose-p:text-gray-300 prose-headings:text-white prose-strong:text-white prose-ul:text-gray-300 prose-li:text-gray-300 prose-code:text-green-400">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{session.analysis}</ReactMarkdown>
+                </div>
+            </div>
+        </div>
+    )
+}
 
 function App() {
     const [page, setPage] = useState<Page>('learn')
     const [step, setStep] = useState(1)
     const [topic, setTopic] = useState('')
     const [explanation, setExplanation] = useState('')
+    const [analysis, setAnalysis] = useState('')
+    const [sessions, setSessions] = useState<SessionRecord[]>(loadSessions)
+    const [selectedSession, setSelectedSession] = useState<SessionRecord | null>(null)
+
+    function saveAndFinish(score: number) {
+        const record: SessionRecord = {
+            id: Date.now().toString(),
+            topic, explanation, analysis, score,
+            createdAt: new Date().toISOString(),
+        }
+        saveSession(record)
+        setSessions(loadSessions())
+    }
 
     function restart() {
         setStep(1)
         setTopic('')
         setExplanation('')
+        setAnalysis('')
     }
 
     return (
         <div className="flex h-screen bg-gray-950 text-white">
             {/* 사이드바 */}
             <aside className="w-56 bg-gray-900 border-r border-gray-800 p-4 flex flex-col">
-                <h1 className="text-xl font-bold text-indigo-400 mb-6">Booktology</h1>
-                <nav className="space-y-1">
-                    <div
-                        onClick={() => setPage('learn')}
-                        className={`px-3 py-2 rounded-lg text-sm cursor-pointer ${page === 'learn' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800'}`}
-                    >파인만 학습</div>
-                    <div
-                        onClick={() => setPage('settings')}
-                        className={`px-3 py-2 rounded-lg text-sm cursor-pointer ${page === 'settings' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800'}`}
-                    >설정</div>
+                <h1 className="text-xl font-bold text-indigo-400 mb-4">Booktology</h1>
+                <nav className="space-y-1 mb-4">
+                    <div onClick={() => setPage('learn')}
+                        className={`px-3 py-2 rounded-lg text-sm cursor-pointer ${page === 'learn' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800'}`}>
+                        파인만 학습
+                    </div>
+                    <div onClick={() => { setPage('history'); setSelectedSession(null) }}
+                        className={`px-3 py-2 rounded-lg text-sm cursor-pointer ${page === 'history' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800'}`}>
+                        학습 기록 {sessions.length > 0 && <span className="ml-1 text-xs text-gray-500">({sessions.length})</span>}
+                    </div>
+                    <div onClick={() => setPage('settings')}
+                        className={`px-3 py-2 rounded-lg text-sm cursor-pointer ${page === 'settings' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800'}`}>
+                        설정
+                    </div>
                 </nav>
+
+                {/* 최근 기록 미리보기 */}
+                {sessions.length > 0 && page !== 'history' && (
+                    <div className="mt-2">
+                        <p className="text-xs text-gray-600 px-3 mb-2">최근 학습</p>
+                        <div className="space-y-1">
+                            {sessions.slice(0, 5).map(s => (
+                                <div key={s.id}
+                                    onClick={() => { setSelectedSession(s); setPage('history') }}
+                                    className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-800 cursor-pointer truncate">
+                                    {s.topic}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </aside>
 
             {/* 메인 */}
             <main className="flex-1 p-8 overflow-auto">
                 {page === 'settings' && <Settings onBack={() => setPage('learn')} />}
+                {page === 'history' && (
+                    selectedSession
+                        ? <SessionDetail session={selectedSession} onBack={() => setSelectedSession(null)} />
+                        : <HistoryView sessions={sessions} onSelect={s => setSelectedSession(s)} />
+                )}
                 {page === 'learn' && (
                     <>
                         <StepIndicator current={step} />
                         {step === 1 && <Step1 onNext={t => { setTopic(t); setStep(2) }} />}
                         {step === 2 && <Step2 topic={topic} onNext={t => { setExplanation(t); setStep(3) }} />}
-                        {step === 3 && <Step3 topic={topic} explanation={explanation} onNext={() => setStep(4)} />}
-                        {step === 4 && <Step4 topic={topic} onRestart={restart} />}
+                        {step === 3 && <Step3 topic={topic} explanation={explanation}
+                            onAnalyzed={a => setAnalysis(a)}
+                            onNext={() => setStep(4)} />}
+                        {step === 4 && <Step4 topic={topic} onRestart={restart} onSave={saveAndFinish} />}
                     </>
                 )}
             </main>

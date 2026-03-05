@@ -11,6 +11,8 @@ import (
 type AppConfig struct {
 	ProviderType string      `json:"provider_type"` // claude-cli, anthropic, openai, chatgpt-oauth
 	APIKey       string      `json:"api_key,omitempty"`
+	Model        string      `json:"model,omitempty"`
+	Language     string      `json:"language"` // auto, ko, en, ja, zh
 	OAuthToken   *SavedToken `json:"oauth_token,omitempty"`
 }
 
