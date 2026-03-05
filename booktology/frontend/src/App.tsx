@@ -205,29 +205,34 @@ function Step3({ topic, explanation, onAnalyzed, onNext }: { topic: string; expl
             <div className="flex-1 overflow-auto bg-gray-900 rounded-xl border border-gray-800 p-4 space-y-4 mb-3">
                 {error && <p className="text-red-400 text-sm">오류: {error}</p>}
                 {chatMessages.map((msg, i) => (
-                    <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        {msg.role === 'assistant' ? (
-                            <div className="w-full">
-                                <div className="text-xs text-indigo-400 mb-1 font-medium">AI</div>
-                                {msg.content ? (
-                                    <div className={PROSE}>
-                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                                    </div>
+                    <div key={i} className={`flex gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        {msg.role === 'assistant' && (
+                            <div className="w-7 h-7 rounded-full bg-indigo-700 flex items-center justify-center text-xs font-bold shrink-0 mt-1">AI</div>
+                        )}
+                        <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm
+                            ${msg.role === 'user'
+                                ? 'bg-indigo-600 text-white rounded-tr-sm'
+                                : 'bg-gray-800 text-gray-200 rounded-tl-sm border border-gray-700'}`}>
+                            {msg.role === 'assistant' ? (
+                                msg.content ? (
+                                    <>
+                                        <div className={PROSE}>
+                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                                        </div>
+                                        {msg.streaming && (
+                                            <span className="inline-block w-0.5 h-3.5 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
+                                        )}
+                                    </>
                                 ) : (
-                                    <div className="flex items-center gap-2 text-gray-500 text-sm">
+                                    <div className="flex items-center gap-2 text-gray-500 py-1">
                                         <div className="w-3 h-3 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
                                         <span>응답 생성 중...</span>
                                     </div>
-                                )}
-                                {msg.streaming && msg.content && (
-                                    <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
-                                )}
-                                {i < chatMessages.length - 1 && !msg.streaming && <div className="mt-4 border-t border-gray-800" />}
-                            </div>
-                        ) : (
-                            <div className="max-w-sm bg-indigo-600 rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm text-white">
-                                {msg.content}
-                            </div>
+                                )
+                            ) : msg.content}
+                        </div>
+                        {msg.role === 'user' && (
+                            <div className="w-7 h-7 rounded-full bg-gray-600 flex items-center justify-center text-xs shrink-0 mt-1">나</div>
                         )}
                     </div>
                 ))}
