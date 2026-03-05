@@ -156,8 +156,15 @@ func (p *ClaudeCLIProvider) streamAnalyze(ctx context.Context, topic string, exp
 		SessionID string `json:"session_id"`
 	}
 
+	type resultMsg struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+		Result  string `json:"result"`
+	}
+
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	emitted := false
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		var im initMsg
@@ -167,6 +174,15 @@ func (p *ClaudeCLIProvider) streamAnalyze(ctx context.Context, topic string, exp
 		var cd contentDelta
 		if json.Unmarshal(line, &cd) == nil && cd.Type == "content_block_delta" && cd.Delta.Type == "text_delta" && cd.Delta.Text != "" {
 			emit(cd.Delta.Text)
+			emitted = true
+		}
+		// 스트리밍 미지원 시 result 폴백
+		if !emitted {
+			var rm resultMsg
+			if json.Unmarshal(line, &rm) == nil && rm.Type == "result" && rm.Subtype == "success" && rm.Result != "" {
+				emit(rm.Result)
+				emitted = true
+			}
 		}
 	}
 
@@ -602,48 +618,52 @@ func (a *App) SendChatMessage(history []ChatMessage, message string) (string, er
 
 // AnalyzeStreaming - 스트리밍 분석 (이벤트: stream:chunk, stream:done, stream:error)
 func (a *App) AnalyzeStreaming(topic string, explanation string) {
-	lang := "auto"
-	if a.config != nil {
-		lang = a.config.Language
-	}
-	emit := func(chunk string) {
-		wailsruntime.EventsEmit(a.ctx, "stream:chunk", chunk)
-	}
-	if cli, ok := a.provider.(*ClaudeCLIProvider); ok {
-		if err := cli.streamAnalyze(a.ctx, topic, explanation, lang, emit); err != nil {
-			wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
-			return
+	go func() {
+		lang := "auto"
+		if a.config != nil {
+			lang = a.config.Language
 		}
-	} else {
-		result, err := a.provider.Analyze(a.ctx, topic, explanation, lang)
-		if err != nil {
-			wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
-			return
+		emit := func(chunk string) {
+			wailsruntime.EventsEmit(a.ctx, "stream:chunk", chunk)
 		}
-		emit(result)
-	}
-	wailsruntime.EventsEmit(a.ctx, "stream:done", "")
+		if cli, ok := a.provider.(*ClaudeCLIProvider); ok {
+			if err := cli.streamAnalyze(a.ctx, topic, explanation, lang, emit); err != nil {
+				wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
+				return
+			}
+		} else {
+			result, err := a.provider.Analyze(a.ctx, topic, explanation, lang)
+			if err != nil {
+				wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
+				return
+			}
+			emit(result)
+		}
+		wailsruntime.EventsEmit(a.ctx, "stream:done", "")
+	}()
 }
 
 // ChatStreaming - 채팅 스트리밍 (이벤트: stream:chunk, stream:done, stream:error)
 func (a *App) ChatStreaming(history []ChatMessage, message string) {
-	emit := func(chunk string) {
-		wailsruntime.EventsEmit(a.ctx, "stream:chunk", chunk)
-	}
-	if cli, ok := a.provider.(*ClaudeCLIProvider); ok {
-		if err := cli.streamAnalyze(a.ctx, "", message, "", emit); err != nil {
-			wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
-			return
+	go func() {
+		emit := func(chunk string) {
+			wailsruntime.EventsEmit(a.ctx, "stream:chunk", chunk)
 		}
-	} else {
-		result, err := a.provider.Chat(a.ctx, history, message)
-		if err != nil {
-			wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
-			return
+		if cli, ok := a.provider.(*ClaudeCLIProvider); ok {
+			if err := cli.streamAnalyze(a.ctx, "", message, "", emit); err != nil {
+				wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
+				return
+			}
+		} else {
+			result, err := a.provider.Chat(a.ctx, history, message)
+			if err != nil {
+				wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
+				return
+			}
+			emit(result)
 		}
-		emit(result)
-	}
-	wailsruntime.EventsEmit(a.ctx, "stream:done", "")
+		wailsruntime.EventsEmit(a.ctx, "stream:done", "")
+	}()
 }
 
 // ContinueConversation - Step3에서 추가 질문 시 세션 이어서 호출
