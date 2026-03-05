@@ -159,10 +159,12 @@ function Step3({ topic, explanation, onAnalyzed, onNext }: { topic: string; expl
             setChatMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, content: analysisRef.current, streaming: false } : m))
             onAnalyzed(analysisRef.current)
             setLoading(false)
+            offChunk(); offDone(); offError() // 초기 분석 완료 후 리스너 정리
         })
         const offError = EventsOn('stream:error', (err: string) => {
             setError(err)
             setLoading(false)
+            offChunk(); offDone(); offError()
         })
 
         AnalyzeStreaming(topic, explanation)
