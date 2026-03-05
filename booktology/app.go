@@ -627,6 +627,7 @@ func (a *App) AnalyzeStreaming(topic string, explanation string) {
 			wailsruntime.EventsEmit(a.ctx, "stream:chunk", chunk)
 		}
 		if cli, ok := a.provider.(*ClaudeCLIProvider); ok {
+			cli.sessionID = "" // 항상 새 세션으로 분석 시작
 			if err := cli.streamAnalyze(a.ctx, topic, explanation, lang, emit); err != nil {
 				wailsruntime.EventsEmit(a.ctx, "stream:error", err.Error())
 				return
