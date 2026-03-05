@@ -141,15 +141,22 @@ function Step3({ topic, explanation, onAnalyzed, onNext }: { topic: string; expl
     const analysisRef = useRef('')
 
     useEffect(() => {
-        // 스트리밍 첫 메시지 자리 만들기
-        setChatMessages([{ role: 'assistant', content: '', streaming: true }])
+        // 유저 설명 + AI 스트리밍 자리 초기 설정
+        setChatMessages([
+            { role: 'user', content: explanation },
+            { role: 'assistant', content: '', streaming: true },
+        ])
 
         const offChunk = EventsOn('stream:chunk', (chunk: string) => {
             analysisRef.current += chunk
-            setChatMessages([{ role: 'assistant', content: analysisRef.current, streaming: true }])
+            setChatMessages(prev => {
+                const last = prev[prev.length - 1]
+                if (last?.streaming) return [...prev.slice(0, -1), { ...last, content: analysisRef.current }]
+                return prev
+            })
         })
         const offDone = EventsOn('stream:done', () => {
-            setChatMessages([{ role: 'assistant', content: analysisRef.current, streaming: false }])
+            setChatMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, content: analysisRef.current, streaming: false } : m))
             onAnalyzed(analysisRef.current)
             setLoading(false)
         })
