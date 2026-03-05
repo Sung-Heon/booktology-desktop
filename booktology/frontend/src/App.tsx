@@ -223,21 +223,16 @@ function Step3({ topic, explanation, onAnalyzed, onNext }: { topic: string; expl
                                 ? 'bg-indigo-600 text-white rounded-tr-sm'
                                 : 'bg-gray-800 text-gray-200 rounded-tl-sm border border-gray-700'}`}>
                             {msg.role === 'assistant' ? (
-                                msg.content ? (
-                                    <>
-                                        <div className={PROSE}>
-                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                                        </div>
-                                        {msg.streaming && (
-                                            <span className="inline-block w-0.5 h-3.5 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
-                                        )}
-                                    </>
-                                ) : (
-                                    <div className="flex items-center gap-2 text-gray-500 py-1">
-                                        <div className="w-3 h-3 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
-                                        <span>응답 생성 중...</span>
+                                msg.streaming ? (
+                                    <div className="flex items-center gap-2 text-gray-400 py-1">
+                                        <div className="w-3 h-3 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin shrink-0" />
+                                        <span className="text-xs">응답 생성 중...</span>
                                     </div>
-                                )
+                                ) : msg.content ? (
+                                    <div className={PROSE}>
+                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                                    </div>
+                                ) : null
                             ) : msg.content}
                         </div>
                         {msg.role === 'user' && (
