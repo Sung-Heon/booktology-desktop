@@ -9,11 +9,12 @@ import (
 
 // AppConfig - 앱 설정 저장 구조체
 type AppConfig struct {
-	ProviderType string      `json:"provider_type"` // claude-cli, anthropic, openai, chatgpt-oauth
-	APIKey       string      `json:"api_key,omitempty"`
-	Model        string      `json:"model,omitempty"`
-	Language     string      `json:"language"` // auto, ko, en, ja, zh
-	OAuthToken   *SavedToken `json:"oauth_token,omitempty"`
+	ProviderType     string      `json:"provider_type"` // claude-cli, anthropic, openai, chatgpt-oauth, claude-oauth
+	APIKey           string      `json:"api_key,omitempty"`
+	Model            string      `json:"model,omitempty"`
+	Language         string      `json:"language"` // auto, ko, en, ja, zh
+	OAuthToken       *SavedToken `json:"oauth_token,omitempty"`
+	ClaudeOAuthToken *SavedToken `json:"claude_oauth_token,omitempty"`
 }
 
 // SavedToken - 파일에 저장할 토큰 (OAuthToken과 분리)

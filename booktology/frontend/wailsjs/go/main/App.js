@@ -18,6 +18,10 @@ export function ConnectChatGPTOAuth() {
   return window['go']['main']['App']['ConnectChatGPTOAuth']();
 }
 
+export function ConnectClaudeOAuth() {
+  return window['go']['main']['App']['ConnectClaudeOAuth']();
+}
+
 export function ContinueConversation(arg1, arg2) {
   return window['go']['main']['App']['ContinueConversation'](arg1, arg2);
 }

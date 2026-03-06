@@ -10,6 +10,8 @@ export function ChatStreaming(arg1:Array<main.ChatMessage>,arg2:string):Promise<
 
 export function ConnectChatGPTOAuth():Promise<void>;
 
+export function ConnectClaudeOAuth():Promise<void>;
+
 export function ContinueConversation(arg1:string,arg2:string):Promise<string>;
 
 export function GetConfig():Promise<main.AppConfig>;

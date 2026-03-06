@@ -41,6 +41,7 @@ export namespace main {
 	    model?: string;
 	    language: string;
 	    oauth_token?: SavedToken;
+	    claude_oauth_token?: SavedToken;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -53,6 +54,7 @@ export namespace main {
 	        this.model = source["model"];
 	        this.language = source["language"];
 	        this.oauth_token = this.convertValues(source["oauth_token"], SavedToken);
+	        this.claude_oauth_token = this.convertValues(source["claude_oauth_token"], SavedToken);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
